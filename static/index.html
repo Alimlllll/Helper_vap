@@ -77,6 +77,8 @@ h2{font-family:var(--hfont);font-size:18px;margin:0;font-weight:var(--hw)} #prog
 .modal .note{background:var(--hover);border-radius:8px;padding:9px 12px;font-size:13px;margin-top:10px;color:var(--muted)}
 .btn.primary{background:var(--acc);color:#fff;border-color:var(--acc)} :root[data-theme=dark] .btn.primary{color:#0d1714}
 .btn[disabled]{opacity:.5;cursor:default}
+.mops{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 14px}
+.mops .warn{font-size:12px;color:var(--muted)}
 .ubar{height:5px;background:var(--line);border-radius:5px;overflow:hidden;margin-top:12px} .ubar div{height:100%;background:var(--acc);transition:width .3s}
 </style>
 </head>
@@ -97,6 +99,7 @@ document.getElementById("theme").onclick=()=>setTheme(document.documentElement.d
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const nl = s => esc(s).replace(/\n/g,"<br>");
 let current = null;
+const MOPS_URL = "http://localhost:22022/programs-new/";   // адрес карточки проверки в MOPS, в конец дописывается id
 async function loadMeta(){
   try{ const m = await (await fetch("/api/meta")).json();
     const el = document.getElementById("basev");
@@ -163,6 +166,8 @@ async function openCheck(id) {
   document.getElementById("main").innerHTML = `
     <div class="head"><div class="id">Проверка №${esc(c.number)}</div>
     <h1>${esc(c.title)}</h1>
+    <div class="mops"><a class="btn" href="${esc(MOPS_URL + encodeURIComponent(c.id))}" target="_blank" rel="noopener">Открыть в MOPS ↗</a>
+      <span class="warn">⚠ MOPS должен быть запущен</span></div>
     <dl class="meta">${meta}</dl>
     <div>${c.tags.map(t=>`<span class="tag">${esc(t)}</span>`).join("")}</div>${own}</div>
     <div class="sec"><h2>Чек-лист</h2><div class="tools"><span id="prog"></span>
@@ -175,6 +180,7 @@ async function openCheck(id) {
     <div class="sim">${c.similar.map(s=>`<a class="simc" ${go(s.similar_id)}>
       <div class="row"><div class="pct">${Math.round(s.score*100)}%</div><div><div class="t">${esc(s.title)}</div><div class="m">№${esc(s.number)}</div></div></div>
       <div class="why">${fmtWhy(s.reason)}</div></a>`).join("")}</div>`;
+  document.getElementById("main").scrollTop = 0;   // новая проверка — с начала страницы
   upd();
 }
 document.getElementById("search").addEventListener("input", loadList);

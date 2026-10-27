@@ -4,8 +4,13 @@
     build.bat                                   # то же через батник (venv, зависимости)
 
     python precompute.py                                   # без моделей: теги по словарю, TF-IDF
-    python precompute.py --llm qwen2.5:7b                  # теги и объяснения через Ollama
-    python precompute.py --llm qwen2.5:7b --emb intfloat/multilingual-e5-base
+    python precompute.py --llm api:GigaChat-2              # теги и объяснения по API (GigaChat и др.)
+    python precompute.py --llm api:GigaChat-2-Max          # другая модель того же API
+    python precompute.py --llm ollama:qwen2.5:7b           # локальная Ollama
+    python precompute.py --llm api:GigaChat-2 --emb intfloat/multilingual-e5-base
+    python precompute.py --llm api:GigaChat-2 --no-cache   # не брать ответы из кэша
+
+API: адрес — переменная окружения GIGACHAT_API_URL, токен — JPY_API_TOKEN.
 
 Вход:  builder/data/checks/*.json  (в файле — одна проверка или список проверок)
 Выход: base/hints.db в папке приложения (SQLite) — его читает приложение пользователей.
@@ -23,6 +28,15 @@ BASE = Path(__file__).resolve().parent          # builder/
 APP_DIR = BASE.parent                            # приложение пользователей
 SRC_DIR = BASE / "data" / "checks"
 DB = APP_DIR / "base" / "hints.db"
+LLM = None               # задаётся --llm
+LLM_TEMPERATURE = 0.01
+LLM_TIMEOUT = 120        # секунд на один запрос
+LLM_RETRIES = 3          # повторы при 429/5xx и обрывах связи
+LLM_CACHE = True         # кэш ответов модели; --no-cache — выключить
+LLM_CACHE_FILE = BASE / "cache" / "llm_cache.json"
+API_URL_ENV = "GIGACHAT_API_URL"     # переменная окружения с адресом API (без /chat/completions)
+API_TOKEN_ENV = "JPY_API_TOKEN"      # переменная окружения с токеном
+OLLAMA_URL = "http://localhost:11434"
 SCHEMA_VERSION = 1   # формат базы; приложение проверяет его при открытии
 
 # ---- Таксономия процедур («суть» проверки). Ключи — регулярные выражения по нижнему регистру.
@@ -107,25 +121,152 @@ def tags_by_keywords(text):
     return sorted(tag for tag, kws in TAXONOMY.items() if any(re.search(k, t) for k in kws))
 
 
-def ollama(model, prompt, as_json=False):
+# ---------------- языковая модель (API или Ollama) ----------------
+# LLM = "api:<модель>"    — OpenAI-совместимый POST {адрес}/chat/completions (GigaChat и др.)
+# LLM = "ollama:<модель>" — локальная Ollama. Без префикса — считается API.
+
+import hashlib
+
+LLM_STATS = {"calls": 0, "cached": 0, "errors": 0, "tokens": 0, "last_error": ""}
+_llm_cache = None
+
+
+def parse_llm(spec):
+    """'api:GigaChat-2' → ('api', 'GigaChat-2'); 'ollama:qwen2.5:7b' → ('ollama', 'qwen2.5:7b')."""
+    if not spec:
+        return None, None
+    backend, sep, model = str(spec).partition(":")
+    if sep and backend.strip().lower() in ("api", "ollama"):
+        return backend.strip().lower(), model.strip()
+    return "api", str(spec).strip()
+
+
+def _api_conf():
+    url = (os.getenv(API_URL_ENV) or "").rstrip("/")
+    token = os.getenv(API_TOKEN_ENV)
+    if not url:
+        raise RuntimeError(f"Не задан адрес API: переменная окружения {API_URL_ENV}")
+    if not token:
+        raise RuntimeError(f"Не задан токен API: переменная окружения {API_TOKEN_ENV}")
+    return url, {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+
+def list_api_models():
+    """Модели, доступные по API (GET {адрес}/models)."""
+    import requests
+    url, headers = _api_conf()
+    r = requests.get(url + "/models", headers=headers, timeout=LLM_TIMEOUT)
+    r.raise_for_status()
+    return sorted(m.get("id", "?") for m in r.json().get("data", []))
+
+
+def _api_chat(model, prompt):
+    import requests
+    url, headers = _api_conf()
+    body = {"model": model, "messages": [{"role": "user", "content": prompt}],
+            "n": 1, "temperature": LLM_TEMPERATURE}
+    err = None
+    for attempt in range(LLM_RETRIES + 1):
+        try:
+            r = requests.post(url + "/chat/completions", headers=headers, json=body, timeout=LLM_TIMEOUT)
+        except requests.RequestException as e:   # обрыв связи, таймаут — повторяем
+            err = e
+        else:
+            if r.ok:
+                d = r.json()
+                LLM_STATS["tokens"] += (d.get("usage") or {}).get("total_tokens", 0)
+                return d["choices"][0]["message"]["content"]
+            err = RuntimeError(f"API ответил {r.status_code}: {r.text[:300]}")
+            if r.status_code not in (408, 429, 500, 502, 503, 504):
+                raise err                        # 401, 404 и т.п. — повтор не поможет
+        if attempt < LLM_RETRIES:
+            time.sleep(2 * 2 ** attempt)         # 2, 4, 8 с
+    raise err
+
+
+def _ollama(model, prompt, as_json):
     import urllib.request
-    body = {"model": model, "prompt": prompt, "stream": False}
+    body = {"model": model, "prompt": prompt, "stream": False,
+            "options": {"temperature": LLM_TEMPERATURE}}
     if as_json:
         body["format"] = "json"
-    req = urllib.request.Request("http://localhost:11434/api/generate",
-                                 data=json.dumps(body).encode(),
+    req = urllib.request.Request(OLLAMA_URL.rstrip("/") + "/api/generate", data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
-    return json.loads(urllib.request.urlopen(req, timeout=300).read())["response"]
+    d = json.loads(urllib.request.urlopen(req, timeout=LLM_TIMEOUT).read())
+    LLM_STATS["tokens"] += d.get("prompt_eval_count", 0) + d.get("eval_count", 0)
+    return d["response"]
 
 
-def tags_by_llm(text, model):
+def _cache():
+    global _llm_cache
+    if _llm_cache is None:
+        _llm_cache = {}
+        if LLM_CACHE and LLM_CACHE_FILE.exists():
+            try:
+                _llm_cache = json.loads(LLM_CACHE_FILE.read_text(encoding="utf-8"))
+            except ValueError:
+                _llm_cache = {}
+    return _llm_cache
+
+
+def llm(prompt, as_json=False, model=None, use_cache=True):
+    """Один запрос к модели. model — строка как в LLM; по умолчанию берётся LLM."""
+    backend, name = parse_llm(model or LLM)
+    if not backend:
+        raise RuntimeError("Модель не задана (LLM = None)")
+    key = hashlib.sha1(f"{backend}|{name}|{LLM_TEMPERATURE}|{prompt}".encode("utf-8")).hexdigest()
+    cache = _cache()
+    if use_cache and LLM_CACHE and key in cache:
+        LLM_STATS["cached"] += 1
+        return cache[key]
+    LLM_STATS["calls"] += 1
+    try:
+        text = _api_chat(name, prompt) if backend == "api" else _ollama(name, prompt, as_json)
+    except Exception as e:
+        LLM_STATS["errors"] += 1
+        LLM_STATS["last_error"] = str(e)[:300]
+        raise
+    if LLM_CACHE:
+        cache[key] = text
+        LLM_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = LLM_CACHE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, LLM_CACHE_FILE)
+    return text
+
+
+def parse_json(text):
+    """JSON из ответа модели: модели по API часто оборачивают его в ```json … ``` или добавляют слова."""
+    text = text.strip()
+    m = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
+    if m:
+        text = m.group(1).strip()
+    try:
+        return json.loads(text)
+    except ValueError:
+        m = re.search(r"[\[{].*[\]}]", text, re.S)
+        if not m:
+            raise ValueError("в ответе нет JSON: " + text[:200])
+        return json.loads(m.group(0))
+
+
+def llm_report():
+    s = LLM_STATS
+    line = f"Модель {LLM}: запросов {s['calls']}, из кэша {s['cached']}, ошибок {s['errors']}, токенов {s['tokens']}"
+    if s["errors"]:
+        line += f"\n  последняя ошибка: {s['last_error']}  (для этих мест взят запасной вариант без модели)"
+    return line
+
+
+def tags_by_llm(text, model=None):
     prompt = ("Ты помощник аудитора. Определи методические процедуры проверки (суть, а не предмет). "
               "Выбери теги ТОЛЬКО из списка: " + "; ".join(TAXONOMY) +
-              '. Ответь JSON вида {"tags": [...]}.\n\nПроверка:\n' + text[:4000])
+              '. Ответь только JSON вида {"tags": [...]}, без пояснений.\n\nПроверка:\n' + text[:4000])
+    known = {t.lower(): t for t in TAXONOMY}
     try:
-        d = json.loads(ollama(model, prompt, True))
-        d = d.get("tags", d) if isinstance(d, dict) else d
-        tags = [x for x in d if x in TAXONOMY]
+        d = parse_json(llm(prompt, as_json=True, model=model))
+        d = d.get("tags", []) if isinstance(d, dict) else d
+        tags = [known[x.strip().lower()] for x in d if isinstance(x, str) and x.strip().lower() in known]
     except Exception:
         tags = []
     return sorted(set(tags) or tags_by_keywords(text))
@@ -143,12 +284,12 @@ def reason_by_tags(c, o):
     return "; ".join(parts) + "."
 
 
-def reason_by_llm(c, o, model):
+def reason_by_llm(c, o, model=None):
     prompt = ("Ты помощник аудитора. Кратко (1–2 предложения, по-русски) объясни, чем по сути (методике) "
               "похожи две проверки и какое различие важно при переносе задач из второй в первую. Без вступлений.\n\n"
               f"Проверка 1: {c['text'][:1500]}\n\nПроверка 2: {o['text'][:1500]}")
     try:
-        return ollama(model, prompt).strip()
+        return llm(prompt, model=model).strip()
     except Exception:
         return reason_by_tags(c, o)
 
@@ -182,13 +323,16 @@ def jaccard(a, b):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--llm", help="модель Ollama, напр. qwen2.5:7b")
+    ap.add_argument("--llm", help="модель: api:GigaChat-2, api:GigaChat-2-Max, ollama:qwen2.5:7b")
+    ap.add_argument("--no-cache", action="store_true", help="не брать ответы модели из кэша")
     ap.add_argument("--emb", help="модель sentence-transformers, напр. intfloat/multilingual-e5-base")
     ap.add_argument("--dedup", type=float, help="порог объединения задач")
     ap.add_argument("--src", type=Path, help="папка с JSON проверок (по умолчанию builder/data/checks)")
     ap.add_argument("--out", type=Path, help="файл базы (по умолчанию base/hints.db приложения)")
     args = ap.parse_args()
-    global SRC_DIR, DB
+    global SRC_DIR, DB, LLM, LLM_CACHE
+    LLM = args.llm
+    LLM_CACHE = not args.no_cache
     SRC_DIR = args.src or SRC_DIR
     DB = args.out or DB
     dedup = args.dedup or (DEDUP_EMB if args.emb else DEDUP_TFIDF)
@@ -201,6 +345,8 @@ def main():
     for c in checks:
         c["tags"] = tags_by_llm(c["text"], args.llm) if args.llm else tags_by_keywords(c["text"])
         print(f"  {c['number']}: {c['tags']}")
+    if LLM:
+        print(llm_report())
 
     # Для неоткрытых проверок есть только описание — тогда сравниваем «короткие» описания.
     E_full = embed([c["text"] for c in checks], args.emb)
@@ -303,6 +449,8 @@ def main():
     db.commit()
     db.close()
     os.replace(tmp_db, DB)
+    if LLM:
+        print(llm_report())
     print(f"Готово: {DB}")
     print(f"База от {meta['built_at']}: {meta['checks']} проверок ({meta['opened']} с задачами)")
 
