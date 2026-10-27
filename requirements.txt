@@ -1,0 +1,7 @@
+# Приложение пользователей. Зависимости сборки базы — в builder/requirements.txt.
+fastapi
+uvicorn
+openpyxl
+python-docx
+requests
+pyyaml

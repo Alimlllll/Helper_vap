@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Помощник валидации проверок</title>
+<style>:root{--font:"Segoe UI",Inter,Arial,sans-serif;--hfont:var(--font);--hw:650;--bg:#f6f7f9;--side:#fff;--card:#fff;--fg:#1c2433;--muted:#6b7686;--line:#e3e7ee;--hover:#eef3fb;--acc:#2456d6;--acc2:#8fb0f5;--tagbg:#e8eefc;--tagfg:#2456d6;--r:10px;--red:#c4302b;--redbg:#fdecea;--green:#1d8a4e;--greenbg:#e6f5ec}
+:root[data-theme=dark]{--bg:#15171c;--side:#1b1e24;--card:#20242b;--fg:#e7e9ee;--muted:#8b93a1;--line:#2d323b;--hover:#262b33;--acc:#3dd6b5;--acc2:#3dd6b5;--tagbg:#1f3a36;--tagfg:#6ff0d3;--red:#ff8a80;--redbg:#3a2224;--green:#6fe3a0;--greenbg:#1d3326}
+body,#side,.hint,.simc,.chip{transition:background .2s,border-color .2s,color .2s}
+.logo{display:flex;align-items:center;justify-content:space-between}
+#theme{background:none;border:1px solid var(--line);border-radius:999px;color:var(--muted);cursor:pointer;font-size:14px;width:32px;height:32px;padding:0}
+#theme:hover{border-color:var(--acc);color:var(--acc)}
+*{box-sizing:border-box} body{margin:0;display:flex;height:100vh;font-family:var(--font);background:var(--bg);color:var(--fg)}
+#side{width:320px;display:flex;flex-direction:column;background:var(--side);border-right:1px solid var(--line)}
+.logo{padding:20px 20px 6px;font-weight:700;letter-spacing:.02em;font-family:var(--hfont)} .logo span{color:var(--acc);margin:0 4px}
+#side input{margin:12px 16px;padding:9px 12px;border:1px solid var(--line);border-radius:var(--r);background:var(--card);color:var(--fg);outline:none}
+#side input:focus{border-color:var(--acc)}
+#list{overflow:auto;flex:1;padding:0 8px 12px}
+.item{padding:10px 12px;border-radius:var(--r);cursor:pointer;margin:2px 0;border-left:3px solid transparent}
+.item:hover{background:var(--hover)} .item.active{background:var(--hover);border-left-color:var(--acc)}
+.item .t{font-size:14px} .m{font-size:12px;color:var(--muted);margin-top:2px}
+#main{flex:1;overflow:auto;padding:32px 48px;max-width:1000px}
+.id{font-size:12px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase}
+h1{font-family:var(--hfont);margin:6px 0 8px;font-size:28px;font-weight:var(--hw)}
+.desc{color:var(--muted);line-height:1.5;margin:0 0 12px}
+.tag{display:inline-block;background:var(--tagbg);color:var(--tagfg);border-radius:999px;padding:3px 11px;margin:2px 4px 2px 0;font-size:12px}
+.sec{display:flex;align-items:baseline;justify-content:space-between;margin:30px 0 8px}
+h2{font-family:var(--hfont);font-size:18px;margin:0;font-weight:var(--hw)} #prog{color:var(--muted);font-size:13px}
+.pb{height:4px;background:var(--line);border-radius:4px;margin-bottom:12px;overflow:hidden} #pbar{height:100%;background:var(--acc);transition:width .3s}
+.hint{display:grid;grid-template-columns:22px 1fr 70px;gap:12px;align-items:start;background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:14px 16px;margin:8px 0;cursor:pointer;transition:.15s}
+.hint:hover{border-color:var(--acc)} .hint input{accent-color:var(--acc);width:17px;height:17px;margin-top:2px}
+.hint.done .q{text-decoration:line-through;color:var(--muted)} .hint.done{opacity:.7}
+.q{font-size:15px;line-height:1.4;margin-bottom:8px}
+.srcs{display:flex;flex-wrap:wrap;gap:6px}
+.chip{font-size:12px;text-decoration:none;color:var(--fg);border:1px solid var(--line);border-radius:999px;padding:2px 10px;background:var(--bg)}
+.chip span{color:var(--muted)} .chip b{color:var(--acc);font-weight:600} .chip:hover{border-color:var(--acc)}
+.w{height:6px;background:var(--line);border-radius:6px;margin-top:8px;overflow:hidden} .wb{height:100%;background:var(--acc2)}
+.sim{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px}
+.simc{display:flex;gap:12px;align-items:center;text-decoration:none;color:var(--fg);background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:12px}
+.simc:hover{border-color:var(--acc)} .pct{font-family:var(--hfont);font-size:20px;font-weight:700;color:var(--acc);min-width:52px}
+.muted{color:var(--muted)}
+.tools{display:flex;gap:8px;align-items:center}
+.btn{font:inherit;font-size:13px;text-decoration:none;color:var(--acc);border:1px solid var(--line);background:var(--card);border-radius:999px;padding:5px 12px;cursor:pointer}
+.btn:hover{border-color:var(--acc)}
+.chip{position:relative}
+.chip .tip{display:none;position:absolute;left:0;top:calc(100% + 6px);z-index:5;width:340px;white-space:normal;background:var(--fg);color:var(--bg);padding:8px 10px;border-radius:8px;font-size:12px;line-height:1.4;box-shadow:0 6px 20px rgba(0,0,0,.15)}
+.chip:hover .tip{display:block}
+.simc{flex-direction:column;align-items:stretch} .simc .row{display:flex;gap:12px;align-items:center}
+.why{font-size:13px;color:var(--muted);line-height:1.45;border-top:1px dashed var(--line);padding-top:8px;margin-top:2px}
+.why b{color:var(--fg);font-weight:600}
+
+.meta{display:grid;grid-template-columns:130px 1fr;gap:6px 14px;font-size:14px;line-height:1.45;margin:4px 0 14px}
+.meta dt{color:var(--muted)} .meta dd{margin:0}
+.badge{display:inline-block;font-size:11.5px;border-radius:999px;padding:2px 9px;margin-right:6px;white-space:nowrap}
+.b-red{background:var(--redbg);color:var(--red)} .b-gray{background:var(--hover);color:var(--muted)} .b-green{background:var(--greenbg);color:var(--green)}
+.hyp{font-size:12.5px;color:var(--muted);margin:-4px 0 8px}
+.hint details{margin-top:8px;font-size:13px} .hint summary{cursor:pointer;color:var(--acc);font-size:12.5px;list-style:none} .hint summary::-webkit-details-marker{display:none}
+.det{margin-top:8px;border-left:2px solid var(--line);padding-left:12px}
+.det .srcn{font-weight:600;margin-top:8px} .det .k{color:var(--muted)} .det p{margin:3px 0;line-height:1.45}
+.covered .q::after{content:" ✓ есть в программе";font-size:12px;color:var(--green);font-weight:600}
+.typ{margin-top:24px} .typ>summary{cursor:pointer;color:var(--muted);font-size:14px}
+.notopen{background:var(--hover);border-radius:var(--r);padding:10px 14px;font-size:13.5px;color:var(--muted);margin:10px 0}
+.own summary{cursor:pointer;color:var(--acc);font-size:14px;margin-top:6px} .own ol{font-size:14px;line-height:1.5;padding-left:20px}
+.own li span{font-size:12px}
+
+.foot{border-top:1px solid var(--line);padding:10px 16px;font-size:12.5px;color:var(--muted);display:flex;align-items:center;justify-content:space-between;gap:8px}
+.foot button{font:inherit;background:none;border:none;color:var(--acc);cursor:pointer;padding:0;position:relative}
+.foot button.has::after{content:"";position:absolute;right:-9px;top:1px;width:7px;height:7px;border-radius:50%;background:var(--red)}
+.ov{position:fixed;inset:0;background:rgba(10,14,22,.45);display:none;align-items:center;justify-content:center;z-index:50;padding:16px}
+.ov.on{display:flex}
+.modal{background:var(--card);color:var(--fg);border-radius:14px;width:min(520px,100%);max-height:85vh;overflow:auto;padding:22px 24px;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+.modal h3{margin:0 0 4px;font-size:19px} .modal .sub{color:var(--muted);font-size:13px;margin-bottom:14px}
+.modal .ver{font-weight:600;margin:12px 0 4px} .modal ul{margin:0 0 6px;padding-left:20px;font-size:14px;line-height:1.5}
+.modal .row{display:flex;gap:8px;justify-content:flex-end;margin-top:18px}
+.modal input{width:100%;padding:9px 12px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg);margin:4px 0;font:inherit}
+.modal .err{background:var(--redbg);color:var(--red);border-radius:8px;padding:9px 12px;font-size:13px;margin-top:10px}
+.modal .note{background:var(--hover);border-radius:8px;padding:9px 12px;font-size:13px;margin-top:10px;color:var(--muted)}
+.btn.primary{background:var(--acc);color:#fff;border-color:var(--acc)} :root[data-theme=dark] .btn.primary{color:#0d1714}
+.btn[disabled]{opacity:.5;cursor:default}
+.ubar{height:5px;background:var(--line);border-radius:5px;overflow:hidden;margin-top:12px} .ubar div{height:100%;background:var(--acc);transition:width .3s}
+</style>
+</head>
+<body>
+<div id="side"><div class="logo"><div>Валидация<span>·</span>подсказки</div><button id="theme" title="Светлая / тёмная тема"></button></div>
+  <input id="search" placeholder="Поиск проверки…">
+  <div id="list"></div>
+  <div class="foot"><span><span id="ver">версия …</span><br><span id="basev"></span></span><button id="updBtn" onclick="openUpdate(true)">Проверить обновления</button></div>
+</div>
+<div class="ov" id="ov" onclick="if(event.target===this)closeUpdate()"><div class="modal" id="modal"></div></div>
+<div id="main"><p class="muted">Выберите проверку слева.</p></div>
+
+<script>
+function setTheme(t){document.documentElement.dataset.theme=t;document.getElementById("theme").textContent=t==="dark"?"☀":"☾";try{localStorage.setItem("theme",t)}catch(e){}}
+let saved="light";try{saved=localStorage.getItem("theme")||"light"}catch(e){}
+setTheme(saved);
+document.getElementById("theme").onclick=()=>setTheme(document.documentElement.dataset.theme==="dark"?"light":"dark");
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const nl = s => esc(s).replace(/\n/g,"<br>");
+let current = null;
+async function loadMeta(){
+  try{ const m = await (await fetch("/api/meta")).json();
+    const el = document.getElementById("basev");
+    if(m.ok){ const d=(m.built_at||"").slice(0,10).split("-").reverse().join(".");
+      el.textContent = `база от ${d} · ${m.checks} проверок`; }
+    else { el.textContent = "база недоступна";
+      document.getElementById("main").innerHTML = `<div class="notopen">База подсказок недоступна: ${esc(m.reason)}.<br>Нажмите «Проверить обновления» внизу слева.</div>`; }
+  }catch(e){}
+}
+loadMeta();
+async function loadList() {
+  const s = document.getElementById("search").value;
+  const resp = await fetch("/api/checks?search=" + encodeURIComponent(s));
+  if(!resp.ok){ document.getElementById("list").innerHTML = ""; return; }
+  const rows = await resp.json();
+  document.getElementById("list").innerHTML = rows.map(r =>
+    `<div class="item ${r.id===current?'active':''}" onclick="openCheck('${esc(r.id)}')">
+       <div class="t">${esc(r.title)}</div><div class="m">№${esc(r.number)}${r.opened?'':' · не открывалась'}</div></div>`).join("");
+}
+function upd(){const a=document.querySelectorAll('.hint input'),d=[...a].filter(x=>x.checked).length;
+  document.getElementById('prog').textContent=d+' / '+a.length;
+  document.getElementById('pbar').style.width=(a.length?d/a.length*100:0)+'%';
+  document.querySelectorAll('.hint').forEach(h=>h.classList.toggle('done',h.querySelector('input').checked));}
+function fmtWhy(r){return esc(r).replace(/(Общее:|только в источнике:|только в этой проверке:)/g,"<b>$1</b>")}
+function exp(fmt){const done=[...document.querySelectorAll('.hint input')].filter(x=>x.checked).map(x=>x.dataset.no).join(',');
+  location.href=`/api/checks/${encodeURIComponent(current)}/export.${fmt}?done=${done}`}
+const go = id => `href="#${esc(id)}" onclick="openCheck('${esc(id)}');return false"`;
+
+function status(h){
+  return h.confirmed ? `<span class="badge b-red">нарушение подтверждено ${h.total>1?`в ${h.confirmed} из ${h.total}`:''}</span>`
+                     : `<span class="badge b-gray">не подтверждалось</span>`;
+}
+function details(h){
+  const body = h.sources.map(s => `<div class="srcn">№${esc(s.number)} — ${esc(s.title)}</div>` + s.items.map(it => `
+      ${h.sources.length>1||s.items.length>1||it.task!==h.task?`<p><span class="k">Задача:</span> ${esc(it.task)}</p>`:''}
+      <p><span class="k">Итог:</span> ${it.confirmed?'<b>подтверждено</b>':'не подтверждено'}${it.results?' — '+nl(it.results):''}</p>
+      ${it.invoice?`<p><span class="k">Документы:</span> ${nl(it.invoice)}</p>`:''}
+      ${it.method?`<p><span class="k">Методы:</span> ${nl(it.method)}</p>`:''}`).join("")).join("");
+  return `<details onclick="event.stopPropagation()"><summary>Что выявляли, документы, методы ▾</summary><div class="det">${body}</div></details>`;
+}
+function hintCard(h, mx){
+  return `<label class="hint ${h.covered?'covered':''}">
+      <input type="checkbox" data-no="${h.hint_no}" onchange="upd()">
+      <div class="body">
+        <div class="q">${esc(h.task)}</div>
+        ${h.hypo && h.hypo!==h.task ? `<div class="hyp">Гипотеза: ${esc(h.hypo)}</div>`:''}
+        <div class="srcs">${status(h)}${h.sources.map(s => `<a class="chip" ${go(s.check_id)}>№${esc(s.number)} <span>${esc(s.title)}</span> <b>${Math.round(s.score*100)}%</b><span class="tip">${esc(s.reason)}</span></a>`).join("")}</div>
+        ${details(h)}
+      </div>
+      <div class="w"><div class="wb" style="width:${Math.round(h.score/mx*100)}%"></div></div>
+    </label>`;
+}
+async function openCheck(id) {
+  current = id; location.hash = id; loadList();
+  const c = await (await fetch("/api/checks/" + encodeURIComponent(id))).json();
+  const main = c.hints.filter(h=>!h.typical), typ = c.hints.filter(h=>h.typical);
+  const mx = Math.max(0.01, ...main.map(h=>h.score));
+  const missing = main.filter(h=>!h.covered).length;
+  const meta = [["Задача программы",c.purpose],["Метрики",c.metrics],["Основания",c.background]].filter(x=>x[1])
+      .map(([k,v])=>`<dt>${k}</dt><dd>${nl(v)}</dd>`).join("");
+  const own = c.items.length ? `<details class="own"><summary>Задачи в программе этой проверки (${c.items.length}) ▾</summary><ol>${
+      c.items.map(i=>`<li>${esc(i.task)} ${i.confirmed?'<span class="badge b-red">подтверждено</span>':''}</li>`).join("")}</ol></details>`
+    : `<div class="notopen">Проверка не открывалась — задач в программе нет. Ниже задачи из похожих проверок, которые стоит заложить.</div>`;
+  document.getElementById("main").innerHTML = `
+    <div class="head"><div class="id">Проверка №${esc(c.number)}</div>
+    <h1>${esc(c.title)}</h1>
+    <dl class="meta">${meta}</dl>
+    <div>${c.tags.map(t=>`<span class="tag">${esc(t)}</span>`).join("")}</div>${own}</div>
+    <div class="sec"><h2>Чек-лист</h2><div class="tools"><span id="prog"></span>
+      <a class="btn" href="#" onclick="exp('xlsx');return false">⬇ Excel</a><a class="btn" href="#" onclick="exp('docx');return false">⬇ Word</a></div></div>
+    <div class="m" style="margin:-4px 0 10px">${main.length} задач из похожих проверок${c.items.length?`, из них <b>${missing}</b> нет в программе`:''}</div>
+    <div class="pb"><div id="pbar"></div></div>
+    ${main.length ? main.map(h=>hintCard(h,mx)).join("") : `<p class="muted">Похожих проверок с задачами не найдено.</p>`}
+    ${typ.length ? `<details class="typ"><summary>Типовые задачи (${typ.length}) — есть почти во всех проверках ▾</summary>${typ.map(h=>hintCard(h,mx)).join("")}</details>`:''}
+    <div class="sec"><h2>Похожие проверки</h2></div>
+    <div class="sim">${c.similar.map(s=>`<a class="simc" ${go(s.similar_id)}>
+      <div class="row"><div class="pct">${Math.round(s.score*100)}%</div><div><div class="t">${esc(s.title)}</div><div class="m">№${esc(s.number)}</div></div></div>
+      <div class="why">${fmtWhy(s.reason)}</div></a>`).join("")}</div>`;
+  upd();
+}
+document.getElementById("search").addEventListener("input", loadList);
+loadList();
+if (location.hash) openCheck(decodeURIComponent(location.hash.slice(1)));
+
+// ---------------- обновление ----------------
+let U = {info:null, check:null, err:null, phase:"idle"};
+const M = () => document.getElementById("modal");
+async function api(path, opt){ const r = await fetch(path, opt); const j = await r.json().catch(()=>({}));
+  if(!r.ok) throw j; return j; }
+async function loadUpdInfo(){
+  try{ U.info = await api("/api/update/info"); }catch(e){ return; }
+  const v = U.info.current.version;
+  document.getElementById("ver").textContent = v ? "версия " + v : "версия неизвестна";
+  document.getElementById("updBtn").style.display = U.info.configured ? "" : "none";
+  if(U.info.configured && U.info.check_on_start) silentCheck();
+}
+async function silentCheck(){
+  try{
+    U.check = await api("/api/update/check");
+    const b = document.getElementById("updBtn");
+    b.classList.toggle("has", !!U.check.available);
+    if(U.check.available){ b.textContent = "Доступна " + U.check.latest.version;
+      let seen=null; try{seen=sessionStorage.getItem("upd-seen")}catch(e){}
+      if(seen !== U.check.latest.version) openUpdate(false); }
+  }catch(e){ /* нет сети или логина — молча, кнопка остаётся */ }
+}
+async function openUpdate(force){
+  document.getElementById("ov").classList.add("on");
+  if(force){ U.err=null; U.phase="checking"; render();
+    try{ U.check = await api("/api/update/check"); U.phase="idle"; }
+    catch(e){ U.err=e; U.phase="idle"; } }
+  render();
+}
+function closeUpdate(){
+  if(U.phase==="applying"||U.phase==="restarting") return;
+  document.getElementById("ov").classList.remove("on");
+  try{ if(U.check&&U.check.latest) sessionStorage.setItem("upd-seen", U.check.latest.version) }catch(e){}
+}
+function errBox(e){ return e ? `<div class="err"><b>${esc(e.message||"Ошибка")}</b>${e.hint?"<br>"+esc(e.hint):""}${e.details?`<details><summary>подробности</summary><pre style="white-space:pre-wrap;font-size:11px">${esc(e.details)}</pre></details>`:""}</div>` : ""; }
+function loginForm(){
+  return `<div class="note">Для доступа к Bitbucket нужен логин и пароль от учётной записи Omega. Пароль хранится только до закрытия программы.</div>
+    <input id="ulog" placeholder="Логин" value="${esc(U.lastLogin||(U.info&&U.info.login)||"")}" autocomplete="username">
+    <input id="upas" type="password" placeholder="Пароль" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
+    <div class="row"><button class="btn" onclick="closeUpdate()">Отмена</button><button class="btn primary" onclick="doLogin()">Войти</button></div>`;
+}
+function render(){
+  const c = U.check, cur = (U.info&&U.info.current.version)||"—";
+  let h = "";
+  if(U.phase==="checking"){ h = `<h3>Проверка обновлений</h3><div class="sub">Связываюсь с Bitbucket…</div>`; }
+  else if(U.phase==="applying"){ const j=U.job||{};
+    h = `<h3>Устанавливаю обновление</h3><div class="sub">${esc(j.message||"")}</div><div class="ubar"><div style="width:${Math.round((j.progress||0)*100)}%"></div></div>`; }
+  else if(U.phase==="restarting"){ h = `<h3>Перезапуск…</h3><div class="sub">Страница обновится сама, когда программа запустится снова. Это займёт до минуты${U.reqChanged?" — ставятся новые библиотеки, может быть дольше":""}.</div><div class="ubar"><div style="width:100%;opacity:.5"></div></div>`; }
+  else if(U.err && U.err.need_auth){ h = `<h3>Вход в Bitbucket</h3>` + (U.err.message!=="Bitbucket просит логин и пароль"?errBox(U.err):"") + loginForm(); }
+  else if(U.err){ h = `<h3>Обновление</h3><div class="sub">Установлена версия ${esc(cur)}</div>${errBox(U.err)}<div class="row"><button class="btn" onclick="closeUpdate()">Закрыть</button><button class="btn" onclick="openUpdate(true)">Повторить</button></div>`; }
+  else if(c && c.available){
+    h = `<h3>Доступно обновление ${esc(c.latest.version)}</h3><div class="sub">Установлена ${esc(cur)}${c.latest.date?" · новая от "+esc(c.latest.date):""}</div>
+      ${(c.changes||[]).map(e=>`<div class="ver">${esc(e.version)}${e.date?` <span class="m">— ${esc(e.date)}</span>`:""}</div><ul>${e.changes.map(x=>`<li>${esc(x)}</li>`).join("")}</ul>`).join("") || '<div class="note">Описание изменений не найдено.</div>'}
+      <div class="note">Будут обновлены программа и база подсказок. Ваши выгрузки (папка data) и config.yaml не затрагиваются. Перед заменой файлы копируются в data\\update\\backup.</div>
+      <div class="row"><button class="btn" onclick="closeUpdate()">Позже</button><button class="btn primary" onclick="doApply()">Обновить и перезапустить</button></div>`;
+  }
+  else if(c){ h = `<h3>Обновлений нет</h3><div class="sub">Установлена последняя версия ${esc(cur)}</div><div class="row"><button class="btn" onclick="closeUpdate()">Закрыть</button></div>`; }
+  M().innerHTML = h;
+  const f = document.getElementById(document.getElementById("ulog")&&!document.getElementById("ulog").value?"ulog":"upas"); if(f) f.focus();
+}
+async function doLogin(){
+  const login=document.getElementById("ulog").value, password=document.getElementById("upas").value;
+  U.lastLogin = login;
+  U.phase="checking"; render();
+  try{ U.check = await api("/api/update/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({login,password})}); U.err=null;
+       document.getElementById("updBtn").classList.toggle("has", !!U.check.available); }
+  catch(e){ U.err=e; }
+  U.phase="idle"; render();
+}
+async function doApply(){
+  U.phase="applying"; U.job={message:"начинаю",progress:0}; render();
+  try{ await api("/api/update/apply",{method:"POST"}); }catch(e){ U.err=e; U.phase="idle"; return render(); }
+  while(true){
+    await new Promise(r=>setTimeout(r,700));
+    try{ U.job = await api("/api/update/status"); }catch(e){ continue; }
+    if(U.job.state==="running"){ render(); continue; }
+    if(U.job.state==="error"){ U.err=U.job.error; U.phase="idle"; return render(); }
+    if(U.job.state==="done") break;
+  }
+  U.reqChanged = U.job.result && U.job.result.requirements_changed;
+  U.phase="restarting"; render();
+  const oldBoot = U.info.boot;
+  try{ await api("/api/update/restart",{method:"POST"}); }catch(e){ U.err=e; U.phase="idle"; return render(); }
+  const t0=Date.now();
+  while(Date.now()-t0 < 5*60*1000){
+    await new Promise(r=>setTimeout(r,1500));
+    try{ const i = await api("/api/update/info"); if(i.boot!==oldBoot){ location.reload(); return; } }catch(e){}
+  }
+  U.err={message:"Программа не запустилась сама",hint:"Запустите start.bat вручную. Журнал перезапуска: data\\update\\restart.log"}; U.phase="idle"; render();
+}
+loadUpdInfo();
+</script>
+</body>
+</html>

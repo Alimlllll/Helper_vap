@@ -1,0 +1,311 @@
+"""
+Сборка базы подсказок — часть АВТОРА (папка builder/, в репозиторий не попадает).
+
+    build.bat                                   # то же через батник (venv, зависимости)
+
+    python precompute.py                                   # без моделей: теги по словарю, TF-IDF
+    python precompute.py --llm qwen2.5:7b                  # теги и объяснения через Ollama
+    python precompute.py --llm qwen2.5:7b --emb intfloat/multilingual-e5-base
+
+Вход:  builder/data/checks/*.json  (в файле — одна проверка или список проверок)
+Выход: base/hints.db в папке приложения (SQLite) — его читает приложение пользователей.
+       Папка base/ хранится в репозитории вместе с кодом и приезжает с обновлением.
+Пути можно поменять: --src <папка с JSON>, --out <файл базы>.
+
+Единица подсказки — ЗАДАЧА (task) из гипотезы похожей проверки. Если у гипотезы
+нет задач, подсказкой становится сама гипотеза.
+"""
+import argparse, json, os, re, sqlite3, time
+from pathlib import Path
+import numpy as np
+
+BASE = Path(__file__).resolve().parent          # builder/
+APP_DIR = BASE.parent                            # приложение пользователей
+SRC_DIR = BASE / "data" / "checks"
+DB = APP_DIR / "base" / "hints.db"
+SCHEMA_VERSION = 1   # формат базы; приложение проверяет его при открытии
+
+# ---- Таксономия процедур («суть» проверки). Ключи — регулярные выражения по нижнему регистру.
+TAXONOMY = {
+    "сравнение цен с рынком": [r"рыночн", r"внешн(ей|ие|их) (сет|источник)", r"интернет", r"маркетплейс", r"открытых источник", r"завыш"],
+    "конкурентная процедура": [r"конкурент", r"коммерческ\w* предлож", r"выбор\w* поставщик", r"торг", r"тендер", r"закупочн"],
+    "соответствие спецификации": [r"спецификац", r"характеристик", r"сопоставим"],
+    "соответствие нормативным требованиям": [r"сертификат", r"декларац\w* соответств", r"-фз", r"техрегламент", r"тр тс", r"пожарн", r"законодательств"],
+    "контроль качества": [r"входн\w* контрол", r"качеств", r"приёмк|приемк", r"дефект"],
+    "аффилированность": [r"аффилир", r"конфликт\w* интерес", r"связ\w* .*учредител"],
+    "полномочия подписанта": [r"полномоч", r"подписант", r"доверенност"],
+    "соблюдение сроков": [r"срок", r"просроч", r"исполнительск"],
+    "выборочное тестирование": [r"выборк", r"репрезентатив"],
+    "подтверждение исполнения": [r"\bакт(ы|ов|ами|ах)\b", r"фактическ\w* оказ", r"объём\w* услуг|объем\w* услуг", r"смет"],
+    "ответственность и организация": [r"виновн", r"ответственн", r"проектн\w* команд", r"назначен"],
+}
+
+SIM_TOP_K = 8            # сколько похожих проверок брать
+SIM_MIN = 0.15           # минимальная похожесть
+W_TAGS, W_TEXT = 0.6, 0.4
+DEDUP_TFIDF, DEDUP_EMB = 0.35, 0.85   # порог объединения одинаковых задач
+CONFIRMED_BOOST = 1.5    # задача, по которой нарушение подтвердилось, весит больше
+TYPICAL_SHARE = 0.5      # задача есть в ≥50% открытых проверок → «типовая»
+TYPICAL_MIN = 3
+# Задачи, которые всегда считаются типовыми (оформление, а не суть). Регулярные выражения.
+TYPICAL_PATTERNS = [r"написан\w* акта", r"хронолог"]
+
+
+def clean(s):
+    return re.sub(r"\s+", " ", str(s or "")).strip()
+
+
+# ---------------- загрузка ----------------
+
+def load_checks():
+    raw = []
+    for f in sorted(SRC_DIR.glob("*.json")):
+        d = json.loads(f.read_text(encoding="utf-8"))
+        raw.extend(d if isinstance(d, list) else [d])
+    checks = []
+    for r in raw:
+        c = {
+            "id": str(r.get("id")),
+            "number": r.get("number"),
+            "title": clean(r.get("name")) or f"Проверка {r.get('number')}",
+            "purpose": clean(r.get("program_tasks")),
+            "metrics": clean(r.get("program_metics") or r.get("program_metrics")),
+            "background": clean(r.get("program_points")),
+            "items": [],   # задачи (или гипотезы без задач)
+        }
+        for h in r.get("hypos") or []:
+            ht = clean(h.get("hypo_title"))
+            tasks = h.get("hypo_tasks") or []
+            if not tasks and ht:
+                tasks = [{"task_title": ht, "task_confirmed": h.get("hypo_confirmed"),
+                          "task_results": h.get("hypo_results")}]
+            for t in tasks:
+                tt = clean(t.get("task_title"))
+                if not tt:
+                    continue
+                conf = t.get("task_confirmed")
+                c["items"].append({
+                    "task": tt, "hypo": ht,
+                    "confirmed": conf if conf is not None else h.get("hypo_confirmed"),
+                    "results": clean(t.get("task_results")),
+                    "invoice": clean(t.get("task_invoice")),
+                    "method": clean(t.get("task_method")),
+                })
+        c["opened"] = bool(c["items"])
+        hyp = list(dict.fromkeys(i["hypo"] for i in c["items"] if i["hypo"]))
+        c["text"] = ". ".join([c["title"], c["purpose"], c["metrics"], c["background"], *hyp,
+                               *(i["task"] for i in c["items"])])
+        c["short"] = ". ".join([c["title"], c["purpose"], c["metrics"]])
+        checks.append(c)
+    return checks
+
+
+# ---------------- теги и объяснения ----------------
+
+def tags_by_keywords(text):
+    t = text.lower()
+    return sorted(tag for tag, kws in TAXONOMY.items() if any(re.search(k, t) for k in kws))
+
+
+def ollama(model, prompt, as_json=False):
+    import urllib.request
+    body = {"model": model, "prompt": prompt, "stream": False}
+    if as_json:
+        body["format"] = "json"
+    req = urllib.request.Request("http://localhost:11434/api/generate",
+                                 data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
+    return json.loads(urllib.request.urlopen(req, timeout=300).read())["response"]
+
+
+def tags_by_llm(text, model):
+    prompt = ("Ты помощник аудитора. Определи методические процедуры проверки (суть, а не предмет). "
+              "Выбери теги ТОЛЬКО из списка: " + "; ".join(TAXONOMY) +
+              '. Ответь JSON вида {"tags": [...]}.\n\nПроверка:\n' + text[:4000])
+    try:
+        d = json.loads(ollama(model, prompt, True))
+        d = d.get("tags", d) if isinstance(d, dict) else d
+        tags = [x for x in d if x in TAXONOMY]
+    except Exception:
+        tags = []
+    return sorted(set(tags) or tags_by_keywords(text))
+
+
+def reason_by_tags(c, o):
+    common = sorted(set(c["tags"]) & set(o["tags"]))
+    only_o = sorted(set(o["tags"]) - set(c["tags"]))
+    only_c = sorted(set(c["tags"]) - set(o["tags"]))
+    parts = ["Общее: " + (", ".join(common) if common else "близкие по тексту описания")]
+    if only_o:
+        parts.append("только в источнике: " + ", ".join(only_o))
+    if only_c:
+        parts.append("только в этой проверке: " + ", ".join(only_c))
+    return "; ".join(parts) + "."
+
+
+def reason_by_llm(c, o, model):
+    prompt = ("Ты помощник аудитора. Кратко (1–2 предложения, по-русски) объясни, чем по сути (методике) "
+              "похожи две проверки и какое различие важно при переносе задач из второй в первую. Без вступлений.\n\n"
+              f"Проверка 1: {c['text'][:1500]}\n\nПроверка 2: {o['text'][:1500]}")
+    try:
+        return ollama(model, prompt).strip()
+    except Exception:
+        return reason_by_tags(c, o)
+
+
+# ---------------- векторы ----------------
+
+def embed(texts, emb_model):
+    if not texts:
+        return np.zeros((0, 1), dtype=np.float32)
+    if emb_model:
+        from sentence_transformers import SentenceTransformer
+        m = SentenceTransformer(emb_model)
+        return np.asarray(m.encode(texts, normalize_embeddings=True), dtype=np.float32)
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.preprocessing import normalize
+    X = TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5), sublinear_tf=True).fit_transform(texts)
+    return normalize(X).astype(np.float32)  # разрежённая матрица
+
+
+def dot(A, B):
+    r = A @ B.T
+    return r.toarray() if hasattr(r, "toarray") else np.asarray(r)
+
+
+def jaccard(a, b):
+    a, b = set(a), set(b)
+    return len(a & b) / len(a | b) if a | b else 0.0
+
+
+# ---------------- main ----------------
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--llm", help="модель Ollama, напр. qwen2.5:7b")
+    ap.add_argument("--emb", help="модель sentence-transformers, напр. intfloat/multilingual-e5-base")
+    ap.add_argument("--dedup", type=float, help="порог объединения задач")
+    ap.add_argument("--src", type=Path, help="папка с JSON проверок (по умолчанию builder/data/checks)")
+    ap.add_argument("--out", type=Path, help="файл базы (по умолчанию base/hints.db приложения)")
+    args = ap.parse_args()
+    global SRC_DIR, DB
+    SRC_DIR = args.src or SRC_DIR
+    DB = args.out or DB
+    dedup = args.dedup or (DEDUP_EMB if args.emb else DEDUP_TFIDF)
+
+    checks = load_checks()
+    if not checks:
+        raise SystemExit(f"Нет JSON проверок в {SRC_DIR}")
+    print(f"Проверок: {len(checks)}, из них без задач: {sum(not c['opened'] for c in checks)}")
+
+    for c in checks:
+        c["tags"] = tags_by_llm(c["text"], args.llm) if args.llm else tags_by_keywords(c["text"])
+        print(f"  {c['number']}: {c['tags']}")
+
+    # Для неоткрытых проверок есть только описание — тогда сравниваем «короткие» описания.
+    E_full = embed([c["text"] for c in checks], args.emb)
+    E_short = embed([c["short"] for c in checks], args.emb)
+    sim_full, sim_short = dot(E_full, E_full), dot(E_short, E_short)
+
+    all_items = [(ci, it) for ci, c in enumerate(checks) for it in c["items"]]
+    QE = embed([it["task"] for _, it in all_items], args.emb)
+    QS = dot(QE, QE) if all_items else np.zeros((0, 0))
+
+    # «Типовые» задачи: похожая задача встречается в большой доле проверок
+    opened = max(1, sum(c["opened"] for c in checks))
+    typical = []
+    for k in range(len(all_items)):
+        cnt = len({all_items[m][0] for m in np.where(QS[k] >= dedup)[0]})
+        by_pattern = any(re.search(p, all_items[k][1]["task"].lower()) for p in TYPICAL_PATTERNS)
+        typical.append(by_pattern or (cnt >= TYPICAL_MIN and cnt / opened >= TYPICAL_SHARE))
+
+    # Пишем во временный файл и подменяем в конце: запущенное приложение
+    # всё это время видит прежнюю базу, а не наполовину собранную.
+    DB.parent.mkdir(parents=True, exist_ok=True)
+    tmp_db = DB.with_suffix(".db.tmp")
+    tmp_db.unlink(missing_ok=True)
+    db = sqlite3.connect(tmp_db)
+    db.executescript("""
+        CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+        CREATE TABLE checks(id TEXT PRIMARY KEY, number TEXT, title TEXT, purpose TEXT, metrics TEXT,
+                            background TEXT, tags TEXT, opened INTEGER, items TEXT);
+        CREATE TABLE similar(check_id TEXT, similar_id TEXT, score REAL, common_tags TEXT, reason TEXT);
+        CREATE TABLE hints(check_id TEXT, hint_no INTEGER, task TEXT, hypo TEXT, score REAL,
+                           typical INTEGER, confirmed INTEGER, total INTEGER, covered TEXT, sources TEXT);
+    """)
+    for c in checks:
+        db.execute("INSERT INTO checks VALUES(?,?,?,?,?,?,?,?,?)",
+                   (c["id"], str(c["number"]), c["title"], c["purpose"], c["metrics"], c["background"],
+                    json.dumps(c["tags"], ensure_ascii=False), int(c["opened"]),
+                    json.dumps(c["items"], ensure_ascii=False)))
+
+    for i, c in enumerate(checks):
+        sims = []
+        for j, o in enumerate(checks):
+            if i == j or not o["opened"]:
+                continue  # неоткрытая проверка не может быть источником задач
+            ts = sim_full[i, j] if c["opened"] else sim_short[i, j]
+            s = W_TAGS * jaccard(c["tags"], o["tags"]) + W_TEXT * float(ts)
+            if s >= SIM_MIN:
+                sims.append((s, j))
+        sims = sorted(sims, reverse=True)[:SIM_TOP_K]
+        weight = {j: s for s, j in sims}
+        for s, j in sims:
+            o = checks[j]
+            common = sorted(set(c["tags"]) & set(o["tags"]))
+            reason = reason_by_llm(c, o, args.llm) if args.llm else reason_by_tags(c, o)
+            db.execute("INSERT INTO similar VALUES(?,?,?,?,?)",
+                       (c["id"], o["id"], round(s, 3), json.dumps(common, ensure_ascii=False), reason))
+
+        # Задачи похожих проверок → объединяем дубли
+        idx = [k for k, (ci, _) in enumerate(all_items) if ci in weight]
+        clusters = []
+        for k in sorted(idx, key=lambda k: -weight[all_items[k][0]]):
+            for cl in clusters:
+                if QS[k, cl[0]] >= dedup:
+                    cl.append(k)
+                    break
+            else:
+                clusters.append([k])
+
+        own = [k for k, (ci, _) in enumerate(all_items) if ci == i]  # задачи самой проверки
+        hints = []
+        for cl in clusters:
+            src = {}
+            for k in cl:
+                ci, it = all_items[k]
+                o = checks[ci]
+                s = src.setdefault(o["id"], {"check_id": o["id"], "number": o["number"],
+                                             "score": round(weight[ci], 3), "items": []})
+                s["items"].append(it)
+            conf = sum(1 for k in cl if all_items[k][1]["confirmed"])
+            score = sum(weight[all_items[k][0]] * (CONFIRMED_BOOST if all_items[k][1]["confirmed"] else 1)
+                        for k in cl)
+            rep = all_items[cl[0]][1]
+            # есть ли похожая задача уже в программе этой проверки
+            covered = ""
+            if own:
+                best = max(own, key=lambda m: QS[cl[0], m])
+                if QS[cl[0], best] >= dedup:
+                    covered = all_items[best][1]["task"]
+            hints.append((int(any(typical[k] for k in cl)), -score, rep["task"], rep["hypo"],
+                          conf, len(cl), covered, list(src.values())))
+        hints.sort(key=lambda h: (h[0], h[1]))  # сначала содержательные, типовые в конце
+        for no, (typ, nscore, task, hypo, conf, total, covered, src) in enumerate(hints, 1):
+            db.execute("INSERT INTO hints VALUES(?,?,?,?,?,?,?,?,?,?)",
+                       (c["id"], no, task, hypo, round(-nscore, 3), typ, conf, total, covered,
+                        json.dumps(src, ensure_ascii=False)))
+
+    meta = {"schema_version": SCHEMA_VERSION, "built_at": time.strftime("%Y-%m-%d %H:%M"),
+            "checks": len(checks), "opened": sum(c["opened"] for c in checks),
+            "llm": args.llm or "", "emb": args.emb or "", "dedup": dedup}
+    db.executemany("INSERT INTO meta VALUES(?,?)", [(k, str(v)) for k, v in meta.items()])
+    db.commit()
+    db.close()
+    os.replace(tmp_db, DB)
+    print(f"Готово: {DB}")
+    print(f"База от {meta['built_at']}: {meta['checks']} проверок ({meta['opened']} с задачами)")
+
+
+if __name__ == "__main__":
+    main()
